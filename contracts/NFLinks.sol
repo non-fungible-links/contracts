@@ -31,6 +31,12 @@ contract NFLinks is ERC1155, Ownable, ERC1155Burnable, ERC1155Supply {
         id = uint256(hash);
     }
 
+    function calculateReferralTokenId(
+        address referrer
+    ) public pure returns (uint256 id) {
+        id = uint256(uint160(referrer));
+    }
+
     // The following functions are overrides required by Solidity.
 
     function _update(
