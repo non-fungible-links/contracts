@@ -3,14 +3,17 @@ pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/token/ERC1155/ERC1155.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/token/ERC1155/extensions/ERC1155Burnable.sol";
+import "@openzeppelin/contracts/token/ERC1155/extensions/ERC1155Pausable.sol";
 import "@openzeppelin/contracts/token/ERC1155/extensions/ERC1155Supply.sol";
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 
 import "hardhat/console.sol";
 
-contract NFLinks is ERC1155, Ownable, ERC1155Supply {
+contract NFLinks is ERC1155, Ownable, ERC1155Supply, ERC1155Pausable {
+    uint256 public constant CALCULATION_DENOMINATOR = 10000;
+    uint256 public constant MINT_PRICE_INCREASE_NUMERATOR = 1000;
+
     struct NFT {
         uint256 chainId;
         address tokenAddress;
@@ -23,11 +26,47 @@ contract NFLinks is ERC1155, Ownable, ERC1155Supply {
     // This mapping associates users with their referrers, helping to identify who referred a given user.
     mapping(address => address) public referrers;
 
+    // This array will hold the mint prices based on supply ; supply will be passed as index;
+    uint256[] public mintPrices;
+
+    // will be use to make sure that owner doesn't increase the share more than this
+    uint256 public constant MAX_REFERRAL_SHARE_NUMERATOR = 1500;
+    uint256 public constant MAX_SYSTEM_SHARE_NUMERATOR = 1500;
+
+    uint256 public referralShareNumerator = 1500;
+    uint256 public systemShareNumerator = 1500;
+
+    uint256 public systemBalance;
+    mapping(address => uint256) public referralBalances;
+    // Linker ID  ->  balances;
+    mapping(uint256 => uint256) public tokenBalances;
+
     constructor(
         address initialOwner_,
         uint256 initialSeats_
     ) ERC1155("") Ownable(initialOwner_) {
         availableSeats = initialSeats_;
+        // Setting up the initial price of minting
+        // It will be in polygon so 1 matic is the initial price
+        mintPrices.push(1 ether);
+    }
+
+    function setNextMintPrice() public returns (uint256 price) {
+        price =
+            (mintPrices[mintPrices.length - 1] *
+                (CALCULATION_DENOMINATOR + MINT_PRICE_INCREASE_NUMERATOR)) /
+            CALCULATION_DENOMINATOR;
+        mintPrices.push(price);
+    }
+
+    function figureMintPrice(uint256 linkerId_) public returns (uint256 price) {
+        uint256 supply = totalSupply(linkerId_);
+        if (supply < mintPrices.length) {
+            price = mintPrices[supply];
+        } else {
+            // since always this function is called increamentally we won't miss any supply
+            price = setNextMintPrice();
+        }
     }
 
     /**
@@ -61,17 +100,18 @@ contract NFLinks is ERC1155, Ownable, ERC1155Supply {
     }
 
     /**
-     * @dev Mints a new referral token for a user when they mint a new linker token. The referral token
-     * is minted for the specified referrer's address and is assigned a unique ID calculated based on the
+     * @dev Mints a new referral token for a user, either when they mint a new linker token or using a seat. The referral token
+     * is minted for the specified recipient's address and is assigned a unique ID calculated based on the
      * referrer's address. An event is emitted to log the minting of the referral token.
      *
      * @param referrer_ The Ethereum address of the user who referred the minting of a linker token.
+     * @param to_ The Ethereum address of the recipient of the minted referral token.
      */
-    function _mintReferralToken(address referrer_) internal {
+    function _mintReferralToken(address referrer_, address to_) internal {
         // must mint a token for the user
-        _mint(referrer_, calculateReferralTokenId(referrer_), 1, "");
+        _mint(to_, calculateReferralTokenId(referrer_), 1, "");
         // must emit an event
-        emit ReferralTokenMint(referrer_, calculateReferralTokenId(referrer_));
+        emit ReferralTokenMint(to_, calculateReferralTokenId(referrer_));
     }
 
     /**
@@ -127,6 +167,92 @@ contract NFLinks is ERC1155, Ownable, ERC1155Supply {
         emit UserRegistered(consumer_, referrer_);
     }
 
+    function registerAndMint(
+        NFT memory target_,
+        address to_,
+        address referrer_
+    ) public payable {
+        _registerWithSeatOption(referrer_, to_);
+        _mint(target_, to_);
+    }
+
+    function mint(NFT memory target_, address to_) public payable {
+        require(members[to_], "not registered");
+        _mint(target_, to_);
+    }
+
+    function _mint(NFT memory target_, address to_) internal {
+        // check the msg.value mint price
+        uint256 linkerId = calculateLinkerId(target_);
+        uint256 mintPrice = figureMintPrice(calculateLinkerId(target_));
+        require(msg.value == mintPrice, "wrong value");
+
+        //  accounting stuffs
+        uint256 referrerShare;
+        uint256 systemShare;
+        uint256 tokenShare;
+
+        if (referrers[msg.sender] != address(0)) {
+            referrerShare =
+                (msg.value * (referralShareNumerator)) /
+                CALCULATION_DENOMINATOR;
+
+            systemShare =
+                (msg.value * (systemShareNumerator)) /
+                CALCULATION_DENOMINATOR;
+        } else {
+            systemShare =
+                (msg.value * (systemShareNumerator + referralShareNumerator)) /
+                CALCULATION_DENOMINATOR;
+        }
+
+        referralBalances[referrers[msg.sender]] += referrerShare;
+        systemBalance += systemShare;
+
+        tokenShare = msg.value - (referrerShare + systemShare);
+        tokenBalances[linkerId] += tokenShare;
+
+        // _mintLinker
+        _mint(to_, linkerId, 1, "");
+        // emit event
+        emit LinkerMinted(
+            linkerId,
+            target_.chainId,
+            target_.tokenAddress,
+            target_.tokenId,
+            mintPrice,
+            systemShare,
+            referrerShare,
+            referrers[msg.sender],
+            tokenShare
+        );
+        _mintReferralToken(to_, to_);
+    }
+
+    /**
+     * @dev Internal function to handle the registration process with an option for reserving a seat in the
+     * referral program. If `referrer_` is set to the zero address (address(0)), the function checks for
+     * available seats, reserves a seat for the consumer, mints a referral token for the consumer, and
+     * associates the consumer's address with the zero address as the referrer. If `referrer_` is not the
+     * zero address, it proceeds with the regular registration process.
+     *
+     * @param referrer_ The Ethereum address of the referrer. Use address(0) to reserve a seat.
+     * @param consumer_ The Ethereum address of the consumer registering.
+     */
+    function _registerWithSeatOption(
+        address referrer_,
+        address consumer_
+    ) internal {
+        if (referrer_ == address(0)) {
+            require(availableSeats > 0, "no seat");
+            availableSeats--;
+            _mintReferralToken(address(0), msg.sender);
+            _register(referrer_, consumer_);
+        } else {
+            _register(referrer_, consumer_);
+        }
+    }
+
     // The following functions are overrides required by Solidity.
 
     function _update(
@@ -134,11 +260,22 @@ contract NFLinks is ERC1155, Ownable, ERC1155Supply {
         address to,
         uint256[] memory ids,
         uint256[] memory values
-    ) internal override(ERC1155, ERC1155Supply) {
+    ) internal override(ERC1155, ERC1155Pausable, ERC1155Supply) {
         super._update(from, to, ids, values);
     }
 
     /// events
     event ReferralTokenMint(address referrer_, uint256 tokenId_);
     event UserRegistered(address user_, address referrer_);
+    event LinkerMinted(
+        uint256 indexed linkerId_,
+        uint256 chainId_,
+        address tokenAddress_,
+        uint256 tokenId_,
+        uint256 mintPrice_,
+        uint256 systemShare_,
+        uint256 referrerShare_,
+        address referrer,
+        uint256 tokenShare_
+    );
 }

@@ -21,6 +21,18 @@ const getTestNft = () => {
   return nft;
 };
 
+const getOtherTestNft = () => {
+  const chainId = 2;
+  const tokenAddress = "0xbc4ca0eda7647a8ab7c2061c2e118a18a936f13d";
+  const tokenId = 1;
+  const nft = {
+    chainId,
+    tokenAddress,
+    tokenId,
+  };
+  return nft;
+};
+
 async function signRegistrationData(
   data: { referrer: string; consumer: string },
   signer: SignerWithAddress
@@ -56,7 +68,7 @@ describe("NFTLinker", function () {
   async function deployWithMintAndTransferTokenToConsumer() {
     const amount = 1;
 
-    const fixtureParams = await loadFixture(deployLinker);
+    const fixtureParams = await loadFixture(deployLinkerWithSingleSeat);
     const { nflinks } = fixtureParams;
     const [_, referrer_, consumer_] = await ethers.getSigners();
 
@@ -87,7 +99,7 @@ describe("NFTLinker", function () {
 
   async function deployWithMintAndTransferTokenToConsumerMulti() {
     const amount = 5;
-    const fixtureParams = await loadFixture(deployLinker);
+    const fixtureParams = await loadFixture(deployLinkerWithSingleSeat);
     const { nflinks } = fixtureParams;
     const [_, referrer_, consumer_] = await ethers.getSigners();
 
@@ -230,6 +242,8 @@ describe("NFTLinker", function () {
         deployWithMintAndTransferTokenToConsumer
       );
 
+      expect(await nflinks.members(consumer_.address)).to.be.false;
+
       await nflinks
         .connect(consumer_)
         .register(referrer_.address, consumer_.address);
@@ -240,6 +254,10 @@ describe("NFTLinker", function () {
     it("Must set proper referrer", async function () {
       const { nflinks, referrer_, consumer_ } = await loadFixture(
         deployWithMintAndTransferTokenToConsumer
+      );
+
+      expect(await nflinks.referrers(consumer_.address)).to.be.equal(
+        ethers.ZeroAddress
       );
 
       await nflinks
@@ -332,6 +350,308 @@ describe("NFTLinker", function () {
             signature
           )
       ).to.be.revertedWith("not consumer");
+    });
+  });
+
+  describe("Mint Prices", function () {
+    it("Prices must increase 10% each time", async function () {
+      const { nflinks, consumer_ } = await loadFixture(
+        deployWithMintAndTransferTokenToConsumerMulti
+      );
+
+      const priceLists = [];
+      const formattedPriceList = [];
+
+      for (let i = 0; i < 10; i++) {
+        const price = await nflinks.mintPrices(i);
+        priceLists.push(price);
+        formattedPriceList.push(Number(ethers.formatEther(price)));
+        await nflinks.setNextMintPrice();
+      }
+
+      for (let i = 9; i > 0; i--) {
+        expect(
+          formattedPriceList[i] / formattedPriceList[i - 1]
+        ).to.be.greaterThan(1.09999999);
+        expect(
+          formattedPriceList[i] / formattedPriceList[i - 1]
+        ).to.be.lessThan(1.10000001);
+      }
+    });
+
+    it("Figure mint price must work", async function () {
+      const { nflinks } = await loadFixture(
+        deployWithMintAndTransferTokenToConsumerMulti
+      );
+
+      await expect(nflinks.mintPrices(1)).to.reverted;
+      expect(
+        await nflinks.mintLinkerJustForPriceTest.staticCall(getOtherTestNft())
+      ).to.equal(ethers.parseEther("1"));
+      await nflinks.mintLinkerJustForPriceTest(getOtherTestNft());
+      expect(
+        await nflinks.mintLinkerJustForPriceTest.staticCall(getOtherTestNft())
+      ).to.equal(ethers.parseEther("1.1"));
+      await nflinks.mintLinkerJustForPriceTest(getOtherTestNft());
+
+      await expect(nflinks.mintPrices(1)).to.not.reverted;
+      expect(
+        await nflinks.mintLinkerJustForPriceTest.staticCall(getOtherTestNft())
+      ).to.equal(ethers.parseEther("1.21"));
+    });
+  });
+
+  describe("Mint", function () {
+    it("if there is a seat user can register without referrer and should reduce the amount of available seat", async function () {
+      const { nflinks, consumer_ } = await loadFixture(
+        deployWithMintAndTransferTokenToConsumerMulti
+      );
+
+      const referrerAddress = ethers.ZeroAddress;
+
+      // expect to be able to register with no referer since seat exist
+
+      const avilableSeatsBefore = await nflinks.availableSeats();
+
+      const nftPrice = await nflinks.mintLinkerJustForPriceTest.staticCall(
+        getOtherTestNft()
+      );
+
+      expect(await nflinks.members(consumer_.address)).to.be.false;
+      expect(await nflinks.referrers(consumer_.address)).to.be.equal(
+        ethers.ZeroAddress
+      );
+      await expect(
+        nflinks
+          .connect(consumer_)
+          .registerAndMint(getTestNft(), consumer_.address, referrerAddress, {
+            value: nftPrice,
+          })
+      )
+        .to.emit(nflinks, "UserRegistered")
+        .withArgs(consumer_.address, referrerAddress);
+
+      const avilableSeatsAfter = await nflinks.availableSeats();
+
+      expect(await nflinks.members(consumer_.address)).to.be.true;
+      expect(await nflinks.referrers(consumer_.address)).to.be.equal(
+        referrerAddress
+      );
+      expect(avilableSeatsBefore - avilableSeatsAfter).to.be.equal(1);
+    });
+
+    it("if there is no seat user can not register without referrer ", async function () {
+      const { nflinks, referrer_, consumer_ } = await loadFixture(
+        deployWithMintAndTransferTokenToConsumerMulti
+      );
+      const [_, __, ___, consumer2_] = await ethers.getSigners();
+
+      const referrerAddress = ethers.ZeroAddress;
+
+      const nftPrice = await nflinks.mintLinkerJustForPriceTest.staticCall(
+        getOtherTestNft()
+      );
+
+      await nflinks
+        .connect(consumer_)
+        .registerAndMint(getTestNft(), consumer_.address, referrerAddress, {
+          value: nftPrice,
+        });
+
+      await nflinks.connect(referrer_).mintReferralToken(consumer2_);
+
+      await expect(
+        nflinks
+          .connect(consumer2_)
+          .registerAndMint(getTestNft(), consumer2_.address, referrerAddress, {
+            value: nftPrice,
+          })
+      ).to.revertedWith("no seat");
+    });
+
+    it("if there is no seat user can not register without referrer ", async function () {
+      const { nflinks, referrer_, consumer_ } = await loadFixture(
+        deployWithMintAndTransferTokenToConsumerMulti
+      );
+
+      const referrerAddress = ethers.ZeroAddress;
+
+      const nftPrice = await nflinks.mintLinkerJustForPriceTest.staticCall(
+        getOtherTestNft()
+      );
+
+      await expect(
+        nflinks
+          .connect(consumer_)
+          .registerAndMint(getTestNft(), consumer_.address, referrerAddress)
+      ).to.revertedWith("wrong value");
+
+      await expect(
+        nflinks
+          .connect(consumer_)
+          .registerAndMint(getTestNft(), consumer_.address, referrerAddress, {
+            value: nftPrice + BigInt(1),
+          })
+      ).to.revertedWith("wrong value");
+    });
+
+    it("should set proper system share if there is no referrer", async function () {
+      const { nflinks, referrer_, consumer_ } = await loadFixture(
+        deployWithMintAndTransferTokenToConsumerMulti
+      );
+
+      const referrerAddress = ethers.ZeroAddress;
+
+      const nftPrice = await nflinks.mintLinkerJustForPriceTest.staticCall(
+        getTestNft()
+      );
+
+      const nftId = await nflinks.calculateLinkerId(getTestNft());
+
+      expect(await nflinks.referralBalances(referrerAddress)).to.be.equal(0);
+      expect(await nflinks.systemBalance()).to.be.equal(0);
+      expect(await nflinks.tokenBalances(nftId)).to.be.equal(0);
+
+      await nflinks
+        .connect(consumer_)
+        .registerAndMint(getTestNft(), consumer_.address, referrerAddress, {
+          value: nftPrice,
+        });
+
+      expect(await nflinks.referralBalances(referrerAddress)).to.be.equal(0);
+
+      expect(await nflinks.systemBalance()).to.be.equal(
+        ethers.parseEther("0.3")
+      );
+      expect(await nflinks.tokenBalances(nftId)).to.be.equal(
+        ethers.parseEther("0.7")
+      );
+    });
+
+    it("should set proper system share if there is no referrer", async function () {
+      const { nflinks, referrer_, consumer_ } = await loadFixture(
+        deployWithMintAndTransferTokenToConsumerMulti
+      );
+
+      const nftPrice = await nflinks.mintLinkerJustForPriceTest.staticCall(
+        getTestNft()
+      );
+
+      const nftId = await nflinks.calculateLinkerId(getTestNft());
+
+      expect(await nflinks.referralBalances(referrer_.address)).to.be.equal(0);
+      expect(await nflinks.systemBalance()).to.be.equal(0);
+      expect(await nflinks.tokenBalances(nftId)).to.be.equal(0);
+
+      await nflinks
+        .connect(consumer_)
+        .registerAndMint(getTestNft(), consumer_.address, referrer_.address, {
+          value: nftPrice,
+        });
+
+      expect(await nflinks.referralBalances(referrer_.address)).to.be.equal(
+        ethers.parseEther("0.15")
+      );
+      expect(await nflinks.systemBalance()).to.be.equal(
+        ethers.parseEther("0.15")
+      );
+      expect(await nflinks.tokenBalances(nftId)).to.be.equal(
+        ethers.parseEther("0.7")
+      );
+    });
+
+    it("should properly mint token", async function () {
+      const { nflinks, referrer_, consumer_ } = await loadFixture(
+        deployWithMintAndTransferTokenToConsumerMulti
+      );
+
+      const target = getTestNft();
+
+      const nftPrice = await nflinks.mintLinkerJustForPriceTest.staticCall(
+        getTestNft()
+      );
+
+      const nftId = await nflinks.calculateLinkerId(getTestNft());
+
+      expect(await nflinks.balanceOf(consumer_.address, nftId)).to.be.equal(0);
+
+      await expect(
+        nflinks
+          .connect(consumer_)
+          .registerAndMint(getTestNft(), consumer_.address, referrer_.address, {
+            value: nftPrice,
+          })
+      )
+        .to.emit(nflinks, "LinkerMinted")
+        .withArgs(
+          nftId,
+          target.chainId,
+          ethers.getAddress(target.tokenAddress),
+          target.tokenId,
+          nftPrice,
+          ethers.parseEther("0.15"),
+          ethers.parseEther("0.15"),
+          referrer_.address,
+          ethers.parseEther("0.7")
+        );
+
+      expect(await nflinks.balanceOf(consumer_.address, nftId)).to.be.equal(1);
+    });
+
+    it("should mint a referral token for the ", async function () {
+      const {
+        nflinks,
+        referrer_,
+        consumer_: minter_,
+      } = await loadFixture(deployWithMintAndTransferTokenToConsumerMulti);
+
+      const nftPrice = await nflinks.mintLinkerJustForPriceTest.staticCall(
+        getTestNft()
+      );
+
+      const referralTokenId = await nflinks.calculateReferralTokenId(
+        minter_.address
+      );
+
+      expect(
+        await nflinks.balanceOf(minter_.address, referralTokenId)
+      ).to.be.equal(0);
+
+      await nflinks
+        .connect(minter_)
+        .registerAndMint(getTestNft(), minter_.address, referrer_.address, {
+          value: nftPrice,
+        });
+
+      expect(
+        await nflinks.balanceOf(minter_.address, referralTokenId)
+      ).to.be.equal(1);
+    });
+
+    it("Can not mint if not registered.", async function () {
+      const {
+        nflinks,
+        referrer_,
+        consumer_: minter_,
+      } = await loadFixture(deployWithMintAndTransferTokenToConsumerMulti);
+
+      const nftPrice = await nflinks.mintLinkerJustForPriceTest.staticCall(
+        getTestNft()
+      );
+
+      const referralTokenId = await nflinks.calculateReferralTokenId(
+        minter_.address
+      );
+
+      expect(
+        await nflinks.balanceOf(minter_.address, referralTokenId)
+      ).to.be.equal(0);
+
+      await expect(
+        nflinks.connect(minter_).mint(getTestNft(), minter_.address, {
+          value: nftPrice,
+        })
+      ).to.be.revertedWith("not registered");
     });
   });
 });
