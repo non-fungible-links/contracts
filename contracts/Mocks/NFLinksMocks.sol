@@ -6,8 +6,17 @@ import {NFLinks} from "../NFLinks.sol";
 contract NFLinksMocks is NFLinks {
     constructor(
         address initialOwner_,
-        uint256 initialSeats_
-    ) NFLinks(initialOwner_, initialSeats_) {}
+        uint256 initialSeats_,
+        uint256 initialPrice_,
+        uint256 priceIncreaseNumerator_
+    )
+        NFLinks(
+            initialOwner_,
+            initialSeats_,
+            initialPrice_,
+            priceIncreaseNumerator_
+        )
+    {}
 
     function mintReferralToken(address referrer_) public {
         _mintReferralToken(referrer_, referrer_);

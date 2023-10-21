@@ -22,9 +22,9 @@ const getTestNft = () => {
 };
 
 const getOtherTestNft = () => {
-  const chainId = 2;
+  const chainId = 1;
   const tokenAddress = "0xbc4ca0eda7647a8ab7c2061c2e118a18a936f13d";
-  const tokenId = 1;
+  const tokenId = 5;
   const nft = {
     chainId,
     tokenAddress,
@@ -51,7 +51,12 @@ describe("NFTLinker", function () {
     const [owner] = await ethers.getSigners();
 
     const NFLinks = await ethers.getContractFactory("NFLinksMocks");
-    const nflinks = await NFLinks.deploy(await owner.getAddress(), 500);
+    const nflinks = await NFLinks.deploy(
+      await owner.getAddress(),
+      500,
+      ethers.parseEther("1"),
+      1000
+    );
 
     return { nflinks };
   }
@@ -60,7 +65,12 @@ describe("NFTLinker", function () {
     const [owner] = await ethers.getSigners();
 
     const NFLinks = await ethers.getContractFactory("NFLinksMocks");
-    const nflinks = await NFLinks.deploy(await owner.getAddress(), 1);
+    const nflinks = await NFLinks.deploy(
+      await owner.getAddress(),
+      1,
+      ethers.parseEther("1"),
+      1000
+    );
 
     return { nflinks };
   }
@@ -100,6 +110,37 @@ describe("NFTLinker", function () {
   async function deployWithMintAndTransferTokenToConsumerMulti() {
     const amount = 5;
     const fixtureParams = await loadFixture(deployLinkerWithSingleSeat);
+    const { nflinks } = fixtureParams;
+    const [_, referrer_, consumer_] = await ethers.getSigners();
+
+    const referralTokenId = await nflinks.calculateReferralTokenId(
+      referrer_.address
+    );
+
+    for (let i = 0; i <= amount; i++) {
+      await nflinks.connect(referrer_).mintReferralToken(referrer_.address);
+    }
+
+    await nflinks
+      .connect(referrer_)
+      .safeTransferFrom(
+        referrer_.address,
+        consumer_.address,
+        referralTokenId,
+        amount,
+        "0x"
+      );
+
+    return {
+      ...fixtureParams,
+      referrer_,
+      consumer_,
+    };
+  }
+
+  async function deployWithMintAndTransferTokenToConsumerMultiWithMultiSeat() {
+    const amount = 5;
+    const fixtureParams = await loadFixture(deployLinker);
     const { nflinks } = fixtureParams;
     const [_, referrer_, consumer_] = await ethers.getSigners();
 
@@ -654,4 +695,184 @@ describe("NFTLinker", function () {
       ).to.be.revertedWith("not registered");
     });
   });
+
+  describe("Link", function () {
+    it("Should be able to Link if have a linker token of target", async function () {
+      const { nflinks, consumer_ } = await loadFixture(
+        deployWithMintAndTransferTokenToConsumerMultiWithMultiSeat
+      );
+
+      const referrerAddress = ethers.ZeroAddress;
+
+      let nftPrice;
+
+      const target = getTestNft();
+      const subject = getOtherTestNft();
+
+      nftPrice = await nflinks.mintLinkerJustForPriceTest.staticCall(target);
+
+      await nflinks
+        .connect(consumer_)
+        .registerAndMint(target, consumer_.address, referrerAddress, {
+          value: nftPrice,
+        });
+
+      for (let i = 0; i < 4; i++) {
+        nftPrice = await nflinks.mintLinkerJustForPriceTest.staticCall(target);
+
+        await nflinks.connect(consumer_).mint(target, consumer_.address, {
+          value: nftPrice,
+        });
+      }
+
+      await expect(
+        nflinks.connect(consumer_).link(subject, subject, 1)
+      ).to.rejectedWith("self-link prohibited");
+
+      await expect(
+        nflinks.connect(consumer_).link(target, subject, 1)
+      ).to.rejectedWith("not enough linker");
+
+      await expect(
+        nflinks.connect(consumer_).link(subject, target, 6)
+      ).to.rejectedWith("not enough linker");
+
+      const linkId = await nflinks
+        .connect(consumer_)
+        .calculateLinkId(subject, target);
+
+      const targetLinkerId = await nflinks
+        .connect(consumer_)
+        .calculateLinkerId(target);
+
+      expect(
+        await nflinks.connect(consumer_).balanceOf(consumer_.address, linkId)
+      ).to.be.equal(0);
+
+      expect(
+        await nflinks
+          .connect(consumer_)
+          .balanceOf(consumer_.address, targetLinkerId)
+      ).to.be.equal(5);
+
+      expect(
+        await nflinks
+          .connect(consumer_)
+          .balanceOf(nflinks.getAddress(), targetLinkerId)
+      ).to.be.equal(0);
+
+      await expect(nflinks.connect(consumer_).link(subject, target, 5))
+        .to.emit(nflinks, "Linked")
+        .withArgs(
+          subject.chainId,
+          ethers.getAddress(subject.tokenAddress),
+          subject.tokenId,
+          target.chainId,
+          ethers.getAddress(target.tokenAddress),
+          target.tokenId,
+          5
+        );
+
+      expect(
+        await nflinks
+          .connect(consumer_)
+          .balanceOf(consumer_.address, targetLinkerId)
+      ).to.be.equal(0);
+
+      expect(
+        await nflinks
+          .connect(consumer_)
+          .balanceOf(nflinks.getAddress(), targetLinkerId)
+      ).to.be.equal(5);
+
+      expect(
+        await nflinks.connect(consumer_).balanceOf(consumer_.address, linkId)
+      ).to.be.equal(5);
+    });
+  });
+
+  /*describe("Delink", function () {
+    it("Should be able to Link if have a linker token of target", async function () {
+      const { nflinks, consumer_ } = await loadFixture(
+        deployWithMintAndTransferTokenToConsumerMultiWithMultiSeat
+      );
+
+      const referrerAddress = ethers.ZeroAddress;
+
+      let nftPrice;
+
+      const target = getTestNft();
+      const subject = getOtherTestNft();
+
+      nftPrice = await nflinks.mintLinkerJustForPriceTest.staticCall(target);
+
+      await nflinks
+        .connect(consumer_)
+        .registerAndMint(target, consumer_.address, referrerAddress, {
+          value: nftPrice,
+        });
+
+      for (let i = 0; i < 4; i++) {
+        nftPrice = await nflinks.mintLinkerJustForPriceTest.staticCall(target);
+
+        await nflinks.connect(consumer_).mint(target, consumer_.address, {
+          value: nftPrice,
+        });
+      }
+
+      await expect(
+        nflinks.connect(consumer_).link(subject, subject, 1)
+      ).to.rejectedWith("self-link prohibited");
+
+      await expect(
+        nflinks.connect(consumer_).link(target, subject, 1)
+      ).to.rejectedWith("not enough linker");
+
+      await expect(
+        nflinks.connect(consumer_).link(subject, target, 6)
+      ).to.rejectedWith("not enough linker");
+
+      const linkId = await nflinks
+        .connect(consumer_)
+        .calculateLinkId(subject, target);
+
+      const targetLinkerId = await nflinks
+        .connect(consumer_)
+        .calculateLinkerId(target);
+
+      expect(
+        await nflinks.connect(consumer_).balanceOf(consumer_.address, linkId)
+      ).to.be.equal(0);
+
+      expect(
+        await nflinks
+          .connect(consumer_)
+          .balanceOf(consumer_.address, targetLinkerId)
+      ).to.be.equal(5);
+
+      expect(
+        await nflinks
+          .connect(consumer_)
+          .balanceOf(nflinks.getAddress(), targetLinkerId)
+      ).to.be.equal(0);
+
+      await nflinks.connect(consumer_).link(subject, target, 5);
+
+      expect(
+        await nflinks
+          .connect(consumer_)
+          .balanceOf(consumer_.address, targetLinkerId)
+      ).to.be.equal(0);
+
+      expect(
+        await nflinks
+          .connect(consumer_)
+          .balanceOf(nflinks.getAddress(), targetLinkerId)
+      ).to.be.equal(5);
+
+      expect(
+        await nflinks.connect(consumer_).balanceOf(consumer_.address, linkId)
+      ).to.be.equal(5);
+    });
+  });*/
 });
