@@ -8,6 +8,10 @@ import "@openzeppelin/contracts/token/ERC1155/extensions/ERC1155Supply.sol";
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import "@openzeppelin/contracts/token/ERC1155/utils/ERC1155Holder.sol";
+import "@openzeppelin/contracts/utils/Strings.sol";
+
+import "./interfaces/OptimisticOracleV3Interface.sol";
+
 import "hardhat/console.sol";
 
 contract NFLinks is
@@ -17,6 +21,8 @@ contract NFLinks is
     ERC1155Pausable,
     ERC1155Holder
 {
+    OptimisticOracleV3Interface public oov3;
+
     uint256 public constant CALCULATION_DENOMINATOR = 10000;
     uint256 public mintPriceIncreaseNumerator;
 
@@ -25,6 +31,14 @@ contract NFLinks is
         address tokenAddress;
         uint256 tokenId;
     }
+
+    struct CashoutRequest {
+        bytes32 assertionId;
+        address suggestedOwner;
+    }
+
+    // from linkerId -> cashout request
+    mapping(uint256 => CashoutRequest) public cashoutRequests;
 
     uint256 public availableSeats;
 
@@ -51,13 +65,15 @@ contract NFLinks is
         address initialOwner_,
         uint256 initialSeats_,
         uint256 initialPrice_,
-        uint256 priceIncreaseNumerator_
+        uint256 priceIncreaseNumerator_,
+        address umaV3_
     ) ERC1155("") Ownable(initialOwner_) {
         availableSeats = initialSeats_;
         // Setting up the initial price of minting
         // It will be in polygon so 1 matic is the initial price
         mintPrices.push(initialPrice_);
         mintPriceIncreaseNumerator = priceIncreaseNumerator_;
+        oov3 = OptimisticOracleV3Interface(umaV3_);
     }
 
     /**
@@ -299,6 +315,16 @@ contract NFLinks is
         }
     }
 
+    /**
+     * @dev Creates a link between two NFTs with a specified weight. To establish a link, the subject NFT
+     * (`subject_`) must not be the same as the target NFT (`target_`). The caller must have a sufficient
+     * balance of linker tokens associated with the target NFT to cover the specified weight. The linker
+     * tokens are transferred from the caller to this contract, and a corresponding linked token is minted.
+     *
+     * @param subject_ The NFT that initiates the link.
+     * @param target_ The NFT to which the link is created.
+     * @param weight_ The weight of the link, determining its significance.
+     */
     function link(
         NFT memory subject_,
         NFT memory target_,
@@ -331,8 +357,93 @@ contract NFLinks is
         );
     }
 
-    // The following functions are overrides required by Solidity.
+    /**
+     * @dev Removes a link between two NFTs with a specified weight. The caller must have a sufficient balance
+     * of linked tokens representing the link to be removed (`subject_` and `target_`) to cover the specified
+     * weight. The linked tokens are burned, and the corresponding linker tokens are transferred back to the caller.
+     *
+     * @param subject_ The NFT that initiates the link.
+     * @param target_ The NFT from which the link is removed.
+     * @param weight_ The weight of the link to be removed.
+     */
+    function delink(
+        NFT memory subject_,
+        NFT memory target_,
+        uint256 weight_
+    ) public {
+        uint256 linkId = calculateLinkId(subject_, target_);
+        require(balanceOf(msg.sender, linkId) >= weight_, "not enough link");
+        _burn(msg.sender, linkId, weight_);
+        _safeTransferFrom(
+            address(this),
+            msg.sender,
+            calculateLinkerId(target_),
+            weight_,
+            ""
+        );
+        emit DeLinked(
+            subject_.chainId,
+            subject_.tokenAddress,
+            subject_.tokenId,
+            target_.chainId,
+            target_.tokenAddress,
+            target_.tokenId,
+            weight_
+        );
+    }
 
+    function requestCashout(NFT memory nft_, address suggestedOwner_) public {
+        bytes32 assertionId = oov3.assertTruthWithDefaults(
+            bytes(
+                string.concat(
+                    "owner of nft with chainId: ",
+                    Strings.toString(nft_.chainId),
+                    ", address: ",
+                    Strings.toHexString(nft_.tokenAddress),
+                    "and token i: ",
+                    Strings.toString(nft_.tokenId),
+                    "is: ",
+                    Strings.toHexString(suggestedOwner_)
+                )
+            ),
+            msg.sender
+        );
+        cashoutRequests[calculateLinkerId(nft_)] = CashoutRequest(
+            assertionId,
+            suggestedOwner_
+        );
+        emit CashoutRequested(
+            nft_.chainId,
+            nft_.tokenAddress,
+            nft_.tokenId,
+            suggestedOwner_
+        );
+    }
+
+    function settleCashout(NFT memory nft_) public {
+        uint256 linkId = calculateLinkerId(nft_);
+        CashoutRequest memory request = cashoutRequests[
+            calculateLinkerId(nft_)
+        ];
+        bool assertionResult = oov3.settleAndGetAssertionResult(
+            request.assertionId
+        );
+        require(assertionResult, "assertion failed.");
+        uint256 tokenBalance = tokenBalances[linkId];
+        tokenBalances[linkId] = 0;
+        (bool sent, ) = request.suggestedOwner.call{value: tokenBalance}("");
+        require(sent, "Failed to send money");
+        emit CashoutSettled(
+            nft_.chainId,
+            nft_.tokenAddress,
+            nft_.tokenId,
+            request.suggestedOwner,
+            tokenBalance
+        );
+        delete cashoutRequests[calculateLinkerId(nft_)];
+    }
+
+    // The following functions are overrides required by Solidity.
     function _update(
         address from,
         address to,
@@ -370,5 +481,27 @@ contract NFLinks is
         address objectTokenAddress_,
         uint256 objectTokenId_,
         uint256 weight
+    );
+    event DeLinked(
+        uint256 subjectChainId_,
+        address subjectTokenAddress_,
+        uint256 subjectTokenId_,
+        uint256 objectChainId_,
+        address objectTokenAddress_,
+        uint256 objectTokenId_,
+        uint256 weight
+    );
+    event CashoutRequested(
+        uint256 chainId_,
+        address tokenAddress_,
+        uint256 tokenId_,
+        address suggestedOwner_
+    );
+    event CashoutSettled(
+        uint256 chainId_,
+        address tokenAddress_,
+        uint256 tokenId_,
+        address suggestedOwner_,
+        uint256 amount_
     );
 }

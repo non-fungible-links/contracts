@@ -50,12 +50,15 @@ describe("NFTLinker", function () {
   async function deployLinker() {
     const [owner] = await ethers.getSigners();
 
+    const umaOracleAddress = "0x9923D42eF695B5dd9911D05Ac944d4cAca3c4EAB";
+
     const NFLinks = await ethers.getContractFactory("NFLinksMocks");
     const nflinks = await NFLinks.deploy(
       await owner.getAddress(),
       500,
       ethers.parseEther("1"),
-      1000
+      1000,
+      umaOracleAddress
     );
 
     return { nflinks };
@@ -64,12 +67,16 @@ describe("NFTLinker", function () {
   async function deployLinkerWithSingleSeat() {
     const [owner] = await ethers.getSigners();
 
+    // goerli uma v3 address
+    const umaOracleAddress = "0x9923D42eF695B5dd9911D05Ac944d4cAca3c4EAB";
+
     const NFLinks = await ethers.getContractFactory("NFLinksMocks");
     const nflinks = await NFLinks.deploy(
       await owner.getAddress(),
       1,
       ethers.parseEther("1"),
-      1000
+      1000,
+      umaOracleAddress
     );
 
     return { nflinks };
@@ -791,8 +798,8 @@ describe("NFTLinker", function () {
     });
   });
 
-  /*describe("Delink", function () {
-    it("Should be able to Link if have a linker token of target", async function () {
+  describe("Delink", function () {
+    it("Should be able to delink if you have a link token", async function () {
       const { nflinks, consumer_ } = await loadFixture(
         deployWithMintAndTransferTokenToConsumerMultiWithMultiSeat
       );
@@ -820,18 +827,6 @@ describe("NFTLinker", function () {
         });
       }
 
-      await expect(
-        nflinks.connect(consumer_).link(subject, subject, 1)
-      ).to.rejectedWith("self-link prohibited");
-
-      await expect(
-        nflinks.connect(consumer_).link(target, subject, 1)
-      ).to.rejectedWith("not enough linker");
-
-      await expect(
-        nflinks.connect(consumer_).link(subject, target, 6)
-      ).to.rejectedWith("not enough linker");
-
       const linkId = await nflinks
         .connect(consumer_)
         .calculateLinkId(subject, target);
@@ -840,24 +835,16 @@ describe("NFTLinker", function () {
         .connect(consumer_)
         .calculateLinkerId(target);
 
-      expect(
-        await nflinks.connect(consumer_).balanceOf(consumer_.address, linkId)
-      ).to.be.equal(0);
-
-      expect(
-        await nflinks
-          .connect(consumer_)
-          .balanceOf(consumer_.address, targetLinkerId)
-      ).to.be.equal(5);
-
-      expect(
-        await nflinks
-          .connect(consumer_)
-          .balanceOf(nflinks.getAddress(), targetLinkerId)
-      ).to.be.equal(0);
-
       await nflinks.connect(consumer_).link(subject, target, 5);
 
+      await expect(
+        nflinks.connect(consumer_).delink(subject, target, 6)
+      ).to.rejectedWith("not enough link");
+
+      expect(
+        await nflinks.connect(consumer_).balanceOf(consumer_.address, linkId)
+      ).to.be.equal(5);
+
       expect(
         await nflinks
           .connect(consumer_)
@@ -870,9 +857,33 @@ describe("NFTLinker", function () {
           .balanceOf(nflinks.getAddress(), targetLinkerId)
       ).to.be.equal(5);
 
+      await expect(nflinks.connect(consumer_).delink(subject, target, 5))
+        .to.emit(nflinks, "DeLinked")
+        .withArgs(
+          subject.chainId,
+          ethers.getAddress(subject.tokenAddress),
+          subject.tokenId,
+          target.chainId,
+          ethers.getAddress(target.tokenAddress),
+          target.tokenId,
+          5
+        );
+
       expect(
         await nflinks.connect(consumer_).balanceOf(consumer_.address, linkId)
+      ).to.be.equal(0);
+
+      expect(
+        await nflinks
+          .connect(consumer_)
+          .balanceOf(consumer_.address, targetLinkerId)
       ).to.be.equal(5);
+
+      expect(
+        await nflinks
+          .connect(consumer_)
+          .balanceOf(nflinks.getAddress(), targetLinkerId)
+      ).to.be.equal(0);
     });
-  });*/
+  });
 });

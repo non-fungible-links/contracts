@@ -8,13 +8,15 @@ contract NFLinksMocks is NFLinks {
         address initialOwner_,
         uint256 initialSeats_,
         uint256 initialPrice_,
-        uint256 priceIncreaseNumerator_
+        uint256 priceIncreaseNumerator_,
+        address umaV3_
     )
         NFLinks(
             initialOwner_,
             initialSeats_,
             initialPrice_,
-            priceIncreaseNumerator_
+            priceIncreaseNumerator_,
+            umaV3_
         )
     {}
 
