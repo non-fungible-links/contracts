@@ -12,8 +12,6 @@ import "@openzeppelin/contracts/utils/Strings.sol";
 
 import "./interfaces/OptimisticOracleV3Interface.sol";
 
-import "hardhat/console.sol";
-
 contract NFLinks is
     ERC1155,
     Ownable,
