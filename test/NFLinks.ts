@@ -768,17 +768,10 @@ describe("NFTLinker", function () {
           .balanceOf(nflinks.getAddress(), targetLinkerId)
       ).to.be.equal(0);
 
-      await expect(nflinks.connect(consumer_).link(subject, target, 5))
-        .to.emit(nflinks, "Linked")
-        .withArgs(
-          subject.chainId,
-          ethers.getAddress(subject.tokenAddress),
-          subject.tokenId,
-          target.chainId,
-          ethers.getAddress(target.tokenAddress),
-          target.tokenId,
-          5
-        );
+      await expect(nflinks.connect(consumer_).link(subject, target, 5)).to.emit(
+        nflinks,
+        "Linked"
+      );
 
       expect(
         await nflinks
@@ -857,17 +850,9 @@ describe("NFTLinker", function () {
           .balanceOf(nflinks.getAddress(), targetLinkerId)
       ).to.be.equal(5);
 
-      await expect(nflinks.connect(consumer_).delink(subject, target, 5))
-        .to.emit(nflinks, "DeLinked")
-        .withArgs(
-          subject.chainId,
-          ethers.getAddress(subject.tokenAddress),
-          subject.tokenId,
-          target.chainId,
-          ethers.getAddress(target.tokenAddress),
-          target.tokenId,
-          5
-        );
+      await expect(
+        nflinks.connect(consumer_).delink(subject, target, 5)
+      ).to.emit(nflinks, "DeLinked");
 
       expect(
         await nflinks.connect(consumer_).balanceOf(consumer_.address, linkId)

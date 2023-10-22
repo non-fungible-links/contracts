@@ -345,6 +345,9 @@ contract NFLinks is
         );
         _mint(msg.sender, calculateLinkId(subject_, target_), weight_, "");
         emit Linked(
+            calculateLinkId(subject_, target_),
+            calculateLinkerId(subject_),
+            calculateLinkerId(target_),
             subject_.chainId,
             subject_.tokenAddress,
             subject_.tokenId,
@@ -380,6 +383,9 @@ contract NFLinks is
             ""
         );
         emit DeLinked(
+            linkId,
+            calculateLinkerId(subject_),
+            calculateLinkerId(target_),
             subject_.chainId,
             subject_.tokenAddress,
             subject_.tokenId,
@@ -472,6 +478,9 @@ contract NFLinks is
         uint256 tokenShare_
     );
     event Linked(
+        uint256 indexed linkId_,
+        uint256 indexed subjectLinkerId_,
+        uint256 indexed objectLinkerId_,
         uint256 subjectChainId_,
         address subjectTokenAddress_,
         uint256 subjectTokenId_,
@@ -481,6 +490,9 @@ contract NFLinks is
         uint256 weight
     );
     event DeLinked(
+        uint256 indexed linkId_,
+        uint256 indexed subjectLinkerId_,
+        uint256 indexed objectLinkerId_,
         uint256 subjectChainId_,
         address subjectTokenAddress_,
         uint256 subjectTokenId_,
